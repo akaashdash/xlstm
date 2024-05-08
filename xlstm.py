@@ -36,6 +36,7 @@ class sLSTM(nn.Module):
 class mLSTM(nn.Module):
     def __init__(self, input_size, hidden_size):
         super(mLSTM, self).__init__()
+        self.input_size = input_size
         self.hidden_size = hidden_size
         
         self.Wq = nn.Linear(input_size, hidden_size)
@@ -71,28 +72,33 @@ class xLSTMBlock(nn.Module):
         self.block_type = block_type
         
         if block_type == 'post':
+            self.norm1 = nn.LayerNorm(input_size)
             self.sLSTM = sLSTM(input_size, hidden_size)
+            self.norm2 = nn.LayerNorm(hidden_size)
             self.ff = nn.Sequential(
                 nn.Linear(hidden_size, 4 * hidden_size),
                 nn.GELU(),
                 nn.Linear(4 * hidden_size, hidden_size)
             )
         elif block_type == 'pre':
-            self.mLSTM = mLSTM(input_size, hidden_size)
+            self.norm = nn.LayerNorm(input_size)
             self.ff1 = nn.Linear(input_size, 2 * hidden_size)
-            self.ff2 = nn.Linear(hidden_size, input_size)
+            self.mLSTM = mLSTM(2 * hidden_size, hidden_size)
+            self.ff2 = nn.Linear(hidden_size, hidden_size)
         else:
             raise ValueError('Invalid block type.')
         
     def forward(self, x, h_prev, c_prev, n_prev, m_prev):
         if self.block_type == 'post':
+            x = self.norm1(x)
             h_t, c_t, n_t, m_t = self.sLSTM(x, h_prev, c_prev, n_prev, m_prev)
+            h_t = self.norm2(h_t)
             h_t = self.ff(h_t)
         elif self.block_type == 'pre':
+            x = self.norm(x)
             x = self.ff1(x)
             h_t, c_t, n_t, m_t = self.mLSTM(x, h_prev, c_prev, n_prev, m_prev)
             h_t = self.ff2(h_t)
-        
         return h_t, c_t, n_t, m_t
     
 class xLSTM(nn.Module):
@@ -116,10 +122,10 @@ class xLSTM(nn.Module):
         # Not sure how this forward pass aligns with the paper
         assert len(x) == len(self.blocks)
         # No idea how to initialize these tbh
-        h = torch.zeros(self.hidden_size)
-        c = torch.zeros(self.hidden_size)
-        n = torch.zeros(self.hidden_size)
-        m = torch.zeros(self.hidden_size)
-        for i in range(len(x)):
-            h, c, n, m = self.blocks[i](x[i], h, c, n, m)
-        return h
+        h = [torch.zeros(self.hidden_size) for _ in range(len(x)+1)]
+        c = [torch.zeros(self.hidden_size) for _ in range(len(x)+1)]
+        n = [torch.zeros(self.hidden_size) for _ in range(len(x)+1)]
+        m = [torch.zeros(self.hidden_size) for _ in range(len(x)+1)]
+        for i in range(1, len(x)+1):
+            h[i], c[i], n[i], m[i] = self.blocks[i-1](x[i-1], h[i-1], c[i-1], n[i-1], m[i-1])
+        return h[-1]
