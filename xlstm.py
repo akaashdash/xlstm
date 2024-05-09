@@ -55,7 +55,7 @@ class sLSTM(nn.Module):
             output.append(h[-1])
 
         output = torch.stack(output)
-        return output, h
+        return output, h, c, n, m
     
 class mLSTMLayer(nn.Module):
     def __init__(self, input_size, hidden_size):
@@ -112,7 +112,7 @@ class mLSTM(nn.Module):
             output.append(h[-1])
 
         output = torch.stack(output)
-        return output, h
+        return output, h, c, n, m
     
 class xLSTMBlock(nn.Module):
     def __init__(self, input_size, hidden_size, block_type='post'):
