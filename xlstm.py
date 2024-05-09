@@ -1,9 +1,9 @@
 import torch
 import torch.nn as nn
 
-class sLSTM(nn.Module):
+class sLSTMLayer(nn.Module):
     def __init__(self, input_size, hidden_size):
-        super(sLSTM, self).__init__()
+        super(sLSTMLayer, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
 
@@ -33,9 +33,33 @@ class sLSTM(nn.Module):
         
         return h_t, c_t, n_t, m_t
     
-class mLSTM(nn.Module):
+class sLSTM(nn.Module):
+    def __init__(self, input_size, hidden_size, num_layers=1):
+        super(sLSTM, self).__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.layers = nn.ModuleList([sLSTMLayer(input_size, hidden_size) for _ in range(num_layers)])
+
+    def forward(self, x, h_0=None, c_0=None, n_0=None, m_0=None):
+        assert x.dim() == 2
+        assert x.shape(1) == self.input_size
+        h = torch.zeros(self.num_layers, self.hidden_size) if h_0 is None else h_0
+        c = torch.zeros(self.num_layers, self.hidden_size) if c_0 is None else c_0
+        n = torch.zeros(self.num_layers, self.hidden_size) if n_0 is None else n_0
+        m = torch.zeros(self.num_layers, self.hidden_size) if m_0 is None else m_0
+        output = []
+        for t in range(len(x)):
+            for i in range(self.num_layers):
+                h[i], c[i], n[i], m[i] = self.layers[i](x[t], h[i], c[i], n[i], m[i])
+            output.append(h[-1])
+
+        output = torch.stack(output)
+        return output, h
+    
+class mLSTMLayer(nn.Module):
     def __init__(self, input_size, hidden_size):
-        super(mLSTM, self).__init__()
+        super(mLSTMLayer, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
         
@@ -66,6 +90,30 @@ class mLSTM(nn.Module):
         
         return h_t, c_t, n_t, m_t
     
+class mLSTM(nn.Module):
+    def __init__(self, input_size, hidden_size, num_layers=1):
+        super(mLSTM, self).__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.layers = nn.ModuleList([mLSTMLayer(input_size, hidden_size) for _ in range(num_layers)])
+
+    def forward(self, x, h_0=None, c_0=None, n_0=None, m_0=None):
+        assert x.dim() == 2
+        assert x.shape(1) == self.input_size
+        h = torch.zeros(self.num_layers, self.hidden_size) if h_0 is None else h_0
+        c = torch.zeros(self.num_layers, self.hidden_size) if c_0 is None else c_0
+        n = torch.zeros(self.num_layers, self.hidden_size) if n_0 is None else n_0
+        m = torch.zeros(self.num_layers, self.hidden_size) if m_0 is None else m_0
+        output = []
+        for t in range(len(x)):
+            for i in range(self.num_layers):
+                h[i], c[i], n[i], m[i] = self.layers[i](x[t], h[i], c[i], n[i], m[i])
+            output.append(h[-1])
+
+        output = torch.stack(output)
+        return output, h
+    
 class xLSTMBlock(nn.Module):
     def __init__(self, input_size, hidden_size, block_type='post'):
         super(xLSTMBlock, self).__init__()
@@ -73,7 +121,7 @@ class xLSTMBlock(nn.Module):
         
         if block_type == 'post':
             self.norm1 = nn.LayerNorm(input_size)
-            self.sLSTM = sLSTM(input_size, hidden_size)
+            self.sLSTMLayer = sLSTMLayer(input_size, hidden_size)
             self.norm2 = nn.LayerNorm(hidden_size)
             self.ff = nn.Sequential(
                 nn.Linear(hidden_size, 4 * hidden_size),
@@ -83,7 +131,7 @@ class xLSTMBlock(nn.Module):
         elif block_type == 'pre':
             self.norm = nn.LayerNorm(input_size)
             self.ff1 = nn.Linear(input_size, 2 * hidden_size)
-            self.mLSTM = mLSTM(2 * hidden_size, hidden_size)
+            self.mLSTMLayer = mLSTMLayer(2 * hidden_size, hidden_size)
             self.ff2 = nn.Linear(hidden_size, hidden_size)
         else:
             raise ValueError('Invalid block type.')
@@ -91,13 +139,13 @@ class xLSTMBlock(nn.Module):
     def forward(self, x, h_prev, c_prev, n_prev, m_prev):
         if self.block_type == 'post':
             x = self.norm1(x)
-            h_t, c_t, n_t, m_t = self.sLSTM(x, h_prev, c_prev, n_prev, m_prev)
+            h_t, c_t, n_t, m_t = self.sLSTMLayer(x, h_prev, c_prev, n_prev, m_prev)
             h_t = self.norm2(h_t)
             h_t = self.ff(h_t)
         elif self.block_type == 'pre':
             x = self.norm(x)
             x = self.ff1(x)
-            h_t, c_t, n_t, m_t = self.mLSTM(x, h_prev, c_prev, n_prev, m_prev)
+            h_t, c_t, n_t, m_t = self.mLSTMLayer(x, h_prev, c_prev, n_prev, m_prev)
             h_t = self.ff2(h_t)
         return h_t, c_t, n_t, m_t
     
