@@ -160,6 +160,7 @@ class xLSTM(nn.Module):
         self.hidden_size = hidden_size
         self.num_heads = num_heads
         self.layer_order = layer_order
+        self.num_layers = len(layer_order)
         self.num_copies = num_copies
         self.projection_factor_slstm = projection_factor_slstm
         self.projection_factor_mlstm = projection_factor_mlstm
@@ -175,8 +176,33 @@ class xLSTM(nn.Module):
                     raise ValueError(f"Invalid layer type: {layer_type}. Choose 's' for sLSTM or 'm' for mLSTM.")
                 self.layers.append(layer)
 
-    def forward(self, x, h_prev, c_prev, n_prev, m_prev):
+    # https://pytorch.org/docs/stable/generated/torch.nn.RNN.html
+    def forward(self, x, h_0=None, c_0=None, n_0=None, m_0=None, batch_first=False):
+        assert x.ndim == 3
         assert x.size(-1) == self.input_size
-        for layer in self.layers:
-            x, h_prev, c_prev, n_prev, m_prev = layer(x, h_prev, c_prev, n_prev, m_prev)
-        return x, h_prev, c_prev, n_prev, m_prev
+        if batch_first: x = x.transpose(0, 1)
+        seq_len, batch_size, _ = x.size()
+        h_prev = h_0 if h_0 is not None else torch.zeros(self.num_layers, batch_size, self.hidden_size)
+        h_t = h_prev
+        c_prev = c_0 if c_0 is not None else torch.zeros(self.num_layers, batch_size, self.hidden_size)
+        c_t = c_prev
+        n_prev = n_0 if n_0 is not None else torch.zeros(self.num_layers, batch_size, self.hidden_size)
+        n_t = n_prev
+        m_prev = m_0 if m_0 is not None else torch.zeros(self.num_layers, batch_size, self.hidden_size)
+        m_t = m_prev
+
+        output = []
+        for t in range(seq_len):
+            x_t = x[t]
+            for layer in range(self.num_layers):
+                x_t, h_t[layer], c_t[layer], n_t[layer], m_t[layer] = self.layers[layer](x_t, h_prev[layer].clone(), c_prev[layer].clone(), n_prev[layer].clone(), m_prev[layer].clone())
+            output.append(x_t)
+            h_prev = h_t
+            c_prev = c_t
+            n_prev = n_t
+            m_prev = m_t
+        
+        output = torch.stack(output)
+        if batch_first:
+            output = output.transpose(0, 1)
+        return output, h_t, c_t, n_t, m_t
