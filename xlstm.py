@@ -12,7 +12,7 @@ class CausalConv1D(nn.Module):
     def forward(self, x):
         x = self.conv(x)
         return x[:, :, :-self.padding]
-    
+
 # https://github.com/myscience/x-lstm/blob/main/xlstm/utils.py
 class BlockDiagonal(nn.Module):
     def __init__(self, in_features, out_features, num_blocks):
@@ -60,15 +60,14 @@ class sLSTMBlock(nn.Module):
         self.Rf = BlockDiagonal(hidden_size, hidden_size, num_heads)
         self.Ro = BlockDiagonal(hidden_size, hidden_size, num_heads)
 
-        self.group_norm = nn.GroupNorm(num_groups=num_heads, num_channels=hidden_size)
+        self.group_norm = nn.GroupNorm(num_heads, hidden_size)
 
         self.up_proj_left = nn.Linear(hidden_size, int(hidden_size * projection_factor))
         self.up_proj_right = nn.Linear(hidden_size, int(hidden_size * projection_factor))
-        self.down_proj = nn.Linear(int(hidden_size * projection_factor), hidden_size)
+        self.down_proj = nn.Linear(int(hidden_size * projection_factor), input_size)
 
     def forward(self, x, h_prev, c_prev, n_prev, m_prev):
         x_norm = self.layer_norm(x)
-
         x_conv = F.silu(self.causal_conv(x_norm.unsqueeze(1)).squeeze(1))
 
         z = torch.tanh(self.Wz(x) + self.Rz(h_prev))
@@ -85,7 +84,7 @@ class sLSTMBlock(nn.Module):
         h_t = o * c_t / n_t
 
         output = h_t
-        output_norm = self.group_norm(output.view(-1, self.hidden_size)).view(-1, self.num_heads, self.head_size)
+        output_norm = self.group_norm(output)
         output_left = self.up_proj_left(output_norm)
         output_right = self.up_proj_right(output_norm)
         output_gated = F.gelu(output_right)
@@ -105,21 +104,21 @@ class mLSTMBlock(nn.Module):
         self.projection_factor = projection_factor
 
         self.layer_norm = nn.LayerNorm(input_size)
-        self.up_proj_left = nn.Linear(input_size, projection_factor * input_size)
-        self.up_proj_right = nn.Linear(input_size, projection_factor * input_size)
+        self.up_proj_left = nn.Linear(input_size, int(input_size * projection_factor))
+        self.up_proj_right = nn.Linear(input_size, hidden_size)
         self.down_proj = nn.Linear(hidden_size, input_size)
 
-        self.causal_conv = CausalConv1D(projection_factor * input_size, projection_factor * input_size, 4)
-        self.skip_connection = nn.Linear(projection_factor * input_size, hidden_size)
+        self.causal_conv = CausalConv1D(1, 1, 4)
+        self.skip_connection = nn.Linear(int(input_size * projection_factor), hidden_size)
 
-        self.Wq = BlockDiagonal(projection_factor * input_size, hidden_size, num_heads)
-        self.Wk = BlockDiagonal(projection_factor * input_size, hidden_size, num_heads)
-        self.Wv = BlockDiagonal(projection_factor * input_size, hidden_size, num_heads)
-        self.Wi = nn.Linear(projection_factor * input_size, num_heads)
-        self.Wf = nn.Linear(projection_factor * input_size, num_heads)
-        self.Wo = nn.Linear(projection_factor * input_size, hidden_size)
+        self.Wq = BlockDiagonal(int(input_size * projection_factor), hidden_size, num_heads)
+        self.Wk = BlockDiagonal(int(input_size * projection_factor), hidden_size, num_heads)
+        self.Wv = BlockDiagonal(int(input_size * projection_factor), hidden_size, num_heads)
+        self.Wi = nn.Linear(int(input_size * projection_factor), hidden_size)
+        self.Wf = nn.Linear(int(input_size * projection_factor), hidden_size)
+        self.Wo = nn.Linear(int(input_size * projection_factor), hidden_size)
 
-        self.group_norm = nn.GroupNorm(num_groups=num_heads, num_channels=hidden_size)
+        self.group_norm = nn.GroupNorm(num_heads, hidden_size)
 
     def forward(self, x, h_prev, c_prev, n_prev, m_prev):
         x_norm = self.layer_norm(x)
@@ -141,17 +140,15 @@ class mLSTMBlock(nn.Module):
         i = torch.exp(i_tilde - m_t)
         f = torch.exp(f_tilde + m_prev - m_t)
 
-        c_t = f.unsqueeze(-1).unsqueeze(-1) * c_prev + i.unsqueeze(-1).unsqueeze(-1) * torch.einsum('bhd,bhk->bhdk', v, k)
-        n_t = f.unsqueeze(-1) * n_prev + i.unsqueeze(-1) * k
-        h_t = o * torch.einsum('bhdk,bhk->bhd', c_t, q) / torch.clamp(torch.einsum('bhd,bhd->bh', n_t, q), min=1).unsqueeze(-1)
+        c_t = f * c_prev + i * (v * k) # v @ k.T
+        n_t = f * n_prev + i * k
+        h_t = o * (c_t * q) / torch.max(torch.abs(n_t.T @ q), 1)[0] # o * (c @ q) / max{|n.T @ q|, 1}
 
         output = h_t
-        output_norm = self.group_norm(output.view(-1, self.hidden_size))
-        output_norm = output_norm.view(-1, self.num_heads, self.head_size)
-
+        output_norm = self.group_norm(output)
         output = output_norm + x_skip
-        output = output * F.silu(x_up_right.view(-1, self.hidden_size))
-        output = self.down_proj(output.view(-1, self.hidden_size))
+        output = output * F.silu(x_up_right)
+        output = self.down_proj(output)
         final_output = output + x
 
         return final_output, h_t, c_t, n_t, m_t
@@ -179,6 +176,7 @@ class xLSTM(nn.Module):
                 self.layers.append(layer)
 
     def forward(self, x, h_prev, c_prev, n_prev, m_prev):
+        assert x.size(-1) == self.input_size
         for layer in self.layers:
             x, h_prev, c_prev, n_prev, m_prev = layer(x, h_prev, c_prev, n_prev, m_prev)
         return x, h_prev, c_prev, n_prev, m_prev
