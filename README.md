@@ -17,4 +17,5 @@ A pure pytorch implementation of the [XLSTM paper](https://arxiv.org/abs/2405.04
 ## References
 - https://arxiv.org/abs/2405.04517
 - https://discuss.pytorch.org/t/causal-convolution/3456/3
-- https://github.com/myscience/x-lstm/
+- https://pytorch.org/docs/stable/generated/torch.nn.RNN.html
+- https://pytorch.org/docs/stable/generated/torch.nn.LSTM.html
