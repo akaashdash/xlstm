@@ -37,16 +37,16 @@ class BlockDiagonal(nn.Module):
         return x
 
 class sLSTMBlock(nn.Module):
-    def __init__(self, input_size, hidden_size, num_heads, projection_factor=4/3):
+    def __init__(self, input_size, hidden_size, num_heads, proj_factor=4/3):
         super(sLSTMBlock, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.num_heads = num_heads
         self.head_size = hidden_size // num_heads
-        self.projection_factor = projection_factor
+        self.proj_factor = proj_factor
 
         assert hidden_size % num_heads == 0
-        assert projection_factor > 0
+        assert proj_factor > 0
 
         self.layer_norm = nn.LayerNorm(input_size)
         self.causal_conv = CausalConv1D(1, 1, 4)
@@ -63,9 +63,9 @@ class sLSTMBlock(nn.Module):
 
         self.group_norm = nn.GroupNorm(num_heads, hidden_size)
 
-        self.up_proj_left = nn.Linear(hidden_size, int(hidden_size * projection_factor))
-        self.up_proj_right = nn.Linear(hidden_size, int(hidden_size * projection_factor))
-        self.down_proj = nn.Linear(int(hidden_size * projection_factor), input_size)
+        self.up_proj_left = nn.Linear(hidden_size, int(hidden_size * proj_factor))
+        self.up_proj_right = nn.Linear(hidden_size, int(hidden_size * proj_factor))
+        self.down_proj = nn.Linear(int(hidden_size * proj_factor), input_size)
 
     def forward(self, x, prev_state):
         assert x.size(-1) == self.input_size
@@ -96,33 +96,77 @@ class sLSTMBlock(nn.Module):
         final_output = output + x
 
         return final_output, (h_t, c_t, n_t, m_t)
+    
+class sLSTM(nn.Module):
+    # TODO: Add bias, dropout, bidirectional
+    def __init__(self, input_size, hidden_size, num_heads, num_layers=1, batch_first=False, proj_factor=4/3):
+        super(sLSTM, self).__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.num_heads = num_heads
+        self.num_layers = num_layers
+        self.batch_first = batch_first
+        self.proj_factor_slstm = proj_factor
+
+        self.layers = nn.ModuleList([sLSTMBlock(input_size, hidden_size, num_heads, proj_factor) for _ in range(num_layers)])
+
+    def forward(self, x, state=None):
+        assert x.ndim == 3
+        if self.batch_first: x = x.transpose(0, 1)
+        seq_len, batch_size, _ = x.size()
+        
+        if state is not None:
+            state = torch.stack(list(state))
+            assert state.ndim == 4
+            num_hidden, state_num_layers, state_batch_size, state_input_size = state.size()
+            assert num_hidden == 4
+            assert state_num_layers == self.num_layers
+            assert state_batch_size == batch_size
+            assert state_input_size == self.input_size
+            state = state.transpose(0, 1)
+        else:
+            state = torch.zeros(self.num_layers, 4, batch_size, self.hidden_size)
+
+        output = []
+        for t in range(seq_len):
+            x_t = x[t]
+            for layer in range(self.num_layers):
+                x_t, state_tuple = self.layers[layer](x_t, tuple(state[layer].clone()))
+                state[layer] = torch.stack(list(state_tuple))
+            output.append(x_t)
+        
+        output = torch.stack(output)
+        if self.batch_first:
+            output = output.transpose(0, 1)
+        state = tuple(state.transpose(0, 1))
+        return output, state
 
 class mLSTMBlock(nn.Module):
-    def __init__(self, input_size, hidden_size, num_heads, projection_factor=2):
+    def __init__(self, input_size, hidden_size, num_heads, proj_factor=2):
         super(mLSTMBlock, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.num_heads = num_heads
         self.head_size = hidden_size // num_heads
-        self.projection_factor = projection_factor
+        self.proj_factor = proj_factor
 
         assert hidden_size % num_heads == 0
-        assert projection_factor > 0
+        assert proj_factor > 0
 
         self.layer_norm = nn.LayerNorm(input_size)
-        self.up_proj_left = nn.Linear(input_size, int(input_size * projection_factor))
+        self.up_proj_left = nn.Linear(input_size, int(input_size * proj_factor))
         self.up_proj_right = nn.Linear(input_size, hidden_size)
         self.down_proj = nn.Linear(hidden_size, input_size)
 
         self.causal_conv = CausalConv1D(1, 1, 4)
-        self.skip_connection = nn.Linear(int(input_size * projection_factor), hidden_size)
+        self.skip_connection = nn.Linear(int(input_size * proj_factor), hidden_size)
 
-        self.Wq = BlockDiagonal(int(input_size * projection_factor), hidden_size, num_heads)
-        self.Wk = BlockDiagonal(int(input_size * projection_factor), hidden_size, num_heads)
-        self.Wv = BlockDiagonal(int(input_size * projection_factor), hidden_size, num_heads)
-        self.Wi = nn.Linear(int(input_size * projection_factor), hidden_size)
-        self.Wf = nn.Linear(int(input_size * projection_factor), hidden_size)
-        self.Wo = nn.Linear(int(input_size * projection_factor), hidden_size)
+        self.Wq = BlockDiagonal(int(input_size * proj_factor), hidden_size, num_heads)
+        self.Wk = BlockDiagonal(int(input_size * proj_factor), hidden_size, num_heads)
+        self.Wv = BlockDiagonal(int(input_size * proj_factor), hidden_size, num_heads)
+        self.Wi = nn.Linear(int(input_size * proj_factor), hidden_size)
+        self.Wf = nn.Linear(int(input_size * proj_factor), hidden_size)
+        self.Wo = nn.Linear(int(input_size * proj_factor), hidden_size)
 
         self.group_norm = nn.GroupNorm(num_heads, hidden_size)
 
@@ -160,29 +204,19 @@ class mLSTMBlock(nn.Module):
         final_output = output + x
 
         return final_output, (h_t, c_t, n_t, m_t)
-
-class xLSTM(nn.Module):
+    
+class mLSTM(nn.Module):
     # TODO: Add bias, dropout, bidirectional
-    def __init__(self, input_size, hidden_size, num_heads, layers, batch_first=False, proj_factor_slstm=4/3, proj_factor_mlstm=2):
-        super(xLSTM, self).__init__()
+    def __init__(self, input_size, hidden_size, num_heads, num_layers=1, batch_first=False, proj_factor=2):
+        super(mLSTM, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.num_heads = num_heads
-        self.layers = layers
-        self.num_layers = len(layers)
+        self.num_layers = num_layers
         self.batch_first = batch_first
-        self.projection_factor_slstm = proj_factor_slstm
-        self.projection_factor_mlstm = proj_factor_mlstm
+        self.proj_factor_slstm = proj_factor
 
-        self.layers = nn.ModuleList()
-        for layer_type in layers:
-            if layer_type == 's':
-                layer = sLSTMBlock(input_size, hidden_size, num_heads, projection_factor=proj_factor_slstm)
-            elif layer_type == 'm':
-                layer = mLSTMBlock(input_size, hidden_size, num_heads, projection_factor=proj_factor_mlstm)
-            else:
-                raise ValueError(f"Invalid layer type: {layer_type}. Choose 's' for sLSTM or 'm' for mLSTM.")
-            self.layers.append(layer)
+        self.layers = nn.ModuleList([mLSTMBlock(input_size, hidden_size, num_heads, proj_factor) for _ in range(num_layers)])
 
     def forward(self, x, state=None):
         assert x.ndim == 3
@@ -190,7 +224,7 @@ class xLSTM(nn.Module):
         seq_len, batch_size, _ = x.size()
         
         if state is not None:
-            state = torch.stack(list(state), dim=0)
+            state = torch.stack(list(state))
             assert state.ndim == 4
             num_hidden, state_num_layers, state_batch_size, state_input_size = state.size()
             assert num_hidden == 4
@@ -206,7 +240,61 @@ class xLSTM(nn.Module):
             x_t = x[t]
             for layer in range(self.num_layers):
                 x_t, state_tuple = self.layers[layer](x_t, tuple(state[layer].clone()))
-                state[layer] = torch.stack(list(state_tuple), dim=0)
+                state[layer] = torch.stack(list(state_tuple))
+            output.append(x_t)
+        
+        output = torch.stack(output)
+        if self.batch_first:
+            output = output.transpose(0, 1)
+        state = tuple(state.transpose(0, 1))
+        return output, state
+
+class xLSTM(nn.Module):
+    # TODO: Add bias, dropout, bidirectional
+    def __init__(self, input_size, hidden_size, num_heads, layers, batch_first=False, proj_factor_slstm=4/3, proj_factor_mlstm=2):
+        super(xLSTM, self).__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.num_heads = num_heads
+        self.layers = layers
+        self.num_layers = len(layers)
+        self.batch_first = batch_first
+        self.proj_factor_slstm = proj_factor_slstm
+        self.proj_factor_mlstm = proj_factor_mlstm
+
+        self.layers = nn.ModuleList()
+        for layer_type in layers:
+            if layer_type == 's':
+                layer = sLSTMBlock(input_size, hidden_size, num_heads, proj_factor_slstm)
+            elif layer_type == 'm':
+                layer = mLSTMBlock(input_size, hidden_size, num_heads, proj_factor_mlstm)
+            else:
+                raise ValueError(f"Invalid layer type: {layer_type}. Choose 's' for sLSTM or 'm' for mLSTM.")
+            self.layers.append(layer)
+
+    def forward(self, x, state=None):
+        assert x.ndim == 3
+        if self.batch_first: x = x.transpose(0, 1)
+        seq_len, batch_size, _ = x.size()
+        
+        if state is not None:
+            state = torch.stack(list(state))
+            assert state.ndim == 4
+            num_hidden, state_num_layers, state_batch_size, state_input_size = state.size()
+            assert num_hidden == 4
+            assert state_num_layers == self.num_layers
+            assert state_batch_size == batch_size
+            assert state_input_size == self.input_size
+            state = state.transpose(0, 1)
+        else:
+            state = torch.zeros(self.num_layers, 4, batch_size, self.hidden_size)
+
+        output = []
+        for t in range(seq_len):
+            x_t = x[t]
+            for layer in range(self.num_layers):
+                x_t, state_tuple = self.layers[layer](x_t, tuple(state[layer].clone()))
+                state[layer] = torch.stack(list(state_tuple))
             output.append(x_t)
         
         output = torch.stack(output)
