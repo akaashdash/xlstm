@@ -19,53 +19,49 @@ class BlockDiagonal(nn.Module):
         self.out_features = out_features
         self.num_blocks = num_blocks
 
-        assert in_features % num_blocks == 0
         assert out_features % num_blocks == 0
         
-        block_in_features = in_features // num_blocks
         block_out_features = out_features // num_blocks
         
         self.blocks = nn.ModuleList([
-            nn.Linear(block_in_features, block_out_features)
+            nn.Linear(in_features, block_out_features)
             for _ in range(num_blocks)
         ])
         
     def forward(self, x):
-        x = x.chunk(self.num_blocks, dim=-1)
-        x = [block(x_i) for block, x_i in zip(self.blocks, x)]
+        x = [block(x) for block in self.blocks]
         x = torch.cat(x, dim=-1)
         return x
 
 class sLSTMBlock(nn.Module):
-    def __init__(self, input_size, hidden_size, num_heads, proj_factor=4/3):
+    def __init__(self, input_size, head_size, num_heads, proj_factor=4/3):
         super(sLSTMBlock, self).__init__()
         self.input_size = input_size
-        self.hidden_size = hidden_size
+        self.head_size = head_size
+        self.hidden_size = head_size * num_heads
         self.num_heads = num_heads
-        self.head_size = hidden_size // num_heads
         self.proj_factor = proj_factor
 
-        assert hidden_size % num_heads == 0
         assert proj_factor > 0
 
         self.layer_norm = nn.LayerNorm(input_size)
         self.causal_conv = CausalConv1D(1, 1, 4)
 
-        self.Wz = BlockDiagonal(input_size, hidden_size, num_heads)
-        self.Wi = BlockDiagonal(input_size, hidden_size, num_heads)
-        self.Wf = BlockDiagonal(input_size, hidden_size, num_heads)
-        self.Wo = BlockDiagonal(input_size, hidden_size, num_heads)
+        self.Wz = BlockDiagonal(input_size, self.hidden_size, num_heads)
+        self.Wi = BlockDiagonal(input_size, self.hidden_size, num_heads)
+        self.Wf = BlockDiagonal(input_size, self.hidden_size, num_heads)
+        self.Wo = BlockDiagonal(input_size, self.hidden_size, num_heads)
 
-        self.Rz = BlockDiagonal(hidden_size, hidden_size, num_heads)
-        self.Ri = BlockDiagonal(hidden_size, hidden_size, num_heads)
-        self.Rf = BlockDiagonal(hidden_size, hidden_size, num_heads)
-        self.Ro = BlockDiagonal(hidden_size, hidden_size, num_heads)
+        self.Rz = BlockDiagonal(self.hidden_size, self.hidden_size, num_heads)
+        self.Ri = BlockDiagonal(self.hidden_size, self.hidden_size, num_heads)
+        self.Rf = BlockDiagonal(self.hidden_size, self.hidden_size, num_heads)
+        self.Ro = BlockDiagonal(self.hidden_size, self.hidden_size, num_heads)
 
-        self.group_norm = nn.GroupNorm(num_heads, hidden_size)
+        self.group_norm = nn.GroupNorm(num_heads, self.hidden_size)
 
-        self.up_proj_left = nn.Linear(hidden_size, int(hidden_size * proj_factor))
-        self.up_proj_right = nn.Linear(hidden_size, int(hidden_size * proj_factor))
-        self.down_proj = nn.Linear(int(hidden_size * proj_factor), input_size)
+        self.up_proj_left = nn.Linear(self.hidden_size, int(self.hidden_size * proj_factor))
+        self.up_proj_right = nn.Linear(self.hidden_size, int(self.hidden_size * proj_factor))
+        self.down_proj = nn.Linear(int(self.hidden_size * proj_factor), input_size)
 
     def forward(self, x, prev_state):
         assert x.size(-1) == self.input_size
@@ -105,16 +101,17 @@ class sLSTMBlock(nn.Module):
     
 class sLSTM(nn.Module):
     # TODO: Add bias, dropout, bidirectional
-    def __init__(self, input_size, hidden_size, num_heads, num_layers=1, batch_first=False, proj_factor=4/3):
+    def __init__(self, input_size, head_size, num_heads, num_layers=1, batch_first=False, proj_factor=4/3):
         super(sLSTM, self).__init__()
         self.input_size = input_size
-        self.hidden_size = hidden_size
+        self.head_size = head_size
+        self.hidden_size = head_size * num_heads
         self.num_heads = num_heads
         self.num_layers = num_layers
         self.batch_first = batch_first
         self.proj_factor_slstm = proj_factor
 
-        self.layers = nn.ModuleList([sLSTMBlock(input_size, hidden_size, num_heads, proj_factor) for _ in range(num_layers)])
+        self.layers = nn.ModuleList([sLSTMBlock(input_size, head_size, num_heads, proj_factor) for _ in range(num_layers)])
 
     def forward(self, x, state=None):
         assert x.ndim == 3
@@ -148,33 +145,32 @@ class sLSTM(nn.Module):
         return output, state
 
 class mLSTMBlock(nn.Module):
-    def __init__(self, input_size, hidden_size, num_heads, proj_factor=2):
+    def __init__(self, input_size, head_size, num_heads, proj_factor=2):
         super(mLSTMBlock, self).__init__()
         self.input_size = input_size
-        self.hidden_size = hidden_size
+        self.head_size = head_size
+        self.hidden_size = head_size * num_heads
         self.num_heads = num_heads
-        self.head_size = hidden_size // num_heads
         self.proj_factor = proj_factor
 
-        assert hidden_size % num_heads == 0
         assert proj_factor > 0
 
         self.layer_norm = nn.LayerNorm(input_size)
         self.up_proj_left = nn.Linear(input_size, int(input_size * proj_factor))
-        self.up_proj_right = nn.Linear(input_size, hidden_size)
-        self.down_proj = nn.Linear(hidden_size, input_size)
+        self.up_proj_right = nn.Linear(input_size, self.hidden_size)
+        self.down_proj = nn.Linear(self.hidden_size, input_size)
 
         self.causal_conv = CausalConv1D(1, 1, 4)
-        self.skip_connection = nn.Linear(int(input_size * proj_factor), hidden_size)
+        self.skip_connection = nn.Linear(int(input_size * proj_factor), self.hidden_size)
 
-        self.Wq = BlockDiagonal(int(input_size * proj_factor), hidden_size, num_heads)
-        self.Wk = BlockDiagonal(int(input_size * proj_factor), hidden_size, num_heads)
-        self.Wv = BlockDiagonal(int(input_size * proj_factor), hidden_size, num_heads)
-        self.Wi = nn.Linear(int(input_size * proj_factor), hidden_size)
-        self.Wf = nn.Linear(int(input_size * proj_factor), hidden_size)
-        self.Wo = nn.Linear(int(input_size * proj_factor), hidden_size)
+        self.Wq = BlockDiagonal(int(input_size * proj_factor), self.hidden_size, num_heads)
+        self.Wk = BlockDiagonal(int(input_size * proj_factor), self.hidden_size, num_heads)
+        self.Wv = BlockDiagonal(int(input_size * proj_factor), self.hidden_size, num_heads)
+        self.Wi = nn.Linear(int(input_size * proj_factor), self.hidden_size)
+        self.Wf = nn.Linear(int(input_size * proj_factor), self.hidden_size)
+        self.Wo = nn.Linear(int(input_size * proj_factor), self.hidden_size)
 
-        self.group_norm = nn.GroupNorm(num_heads, hidden_size)
+        self.group_norm = nn.GroupNorm(num_heads, self.hidden_size)
 
     def forward(self, x, prev_state):
         h_prev, c_prev, n_prev, m_prev = prev_state
@@ -219,16 +215,17 @@ class mLSTMBlock(nn.Module):
     
 class mLSTM(nn.Module):
     # TODO: Add bias, dropout, bidirectional
-    def __init__(self, input_size, hidden_size, num_heads, num_layers=1, batch_first=False, proj_factor=2):
+    def __init__(self, input_size, head_size, num_heads, num_layers=1, batch_first=False, proj_factor=2):
         super(mLSTM, self).__init__()
         self.input_size = input_size
-        self.hidden_size = hidden_size
+        self.head_size = head_size
+        self.hidden_size = head_size * num_heads
         self.num_heads = num_heads
         self.num_layers = num_layers
         self.batch_first = batch_first
         self.proj_factor_slstm = proj_factor
 
-        self.layers = nn.ModuleList([mLSTMBlock(input_size, hidden_size, num_heads, proj_factor) for _ in range(num_layers)])
+        self.layers = nn.ModuleList([mLSTMBlock(input_size, head_size, num_heads, proj_factor) for _ in range(num_layers)])
 
     def forward(self, x, state=None):
         assert x.ndim == 3
@@ -263,10 +260,11 @@ class mLSTM(nn.Module):
 
 class xLSTM(nn.Module):
     # TODO: Add bias, dropout, bidirectional
-    def __init__(self, input_size, hidden_size, num_heads, layers, batch_first=False, proj_factor_slstm=4/3, proj_factor_mlstm=2):
+    def __init__(self, input_size, head_size, num_heads, layers, batch_first=False, proj_factor_slstm=4/3, proj_factor_mlstm=2):
         super(xLSTM, self).__init__()
         self.input_size = input_size
-        self.hidden_size = hidden_size
+        self.head_size = head_size
+        self.hidden_size = head_size * num_heads
         self.num_heads = num_heads
         self.layers = layers
         self.num_layers = len(layers)
@@ -277,9 +275,9 @@ class xLSTM(nn.Module):
         self.layers = nn.ModuleList()
         for layer_type in layers:
             if layer_type == 's':
-                layer = sLSTMBlock(input_size, hidden_size, num_heads, proj_factor_slstm)
+                layer = sLSTMBlock(input_size, head_size, num_heads, proj_factor_slstm)
             elif layer_type == 'm':
-                layer = mLSTMBlock(input_size, hidden_size, num_heads, proj_factor_mlstm)
+                layer = mLSTMBlock(input_size, head_size, num_heads, proj_factor_mlstm)
             else:
                 raise ValueError(f"Invalid layer type: {layer_type}. Choose 's' for sLSTM or 'm' for mLSTM.")
             self.layers.append(layer)
