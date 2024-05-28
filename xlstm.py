@@ -77,10 +77,10 @@ class sLSTMBlock(nn.Module):
         m_prev = m_prev.to(x.device)
         
         x_norm = self.layer_norm(x)
-        x_conv = F.silu(self.causal_conv(x_norm.unsqueeze(1)).squeeze(1))
+        x_conv = F.silu(self.causal_conv(x_norm.permute(1, 2, 0))).permute(2, 0, 1) # Reshape and permute
 
-        z = torch.tanh(self.Wz(x) + self.Rz(h_prev))
-        o = torch.sigmoid(self.Wo(x) + self.Ro(h_prev))
+        z = torch.tanh(self.Wz(x_norm) + self.Rz(h_prev))
+        o = torch.sigmoid(self.Wo(x_norm) + self.Ro(h_prev))
         i_tilde = self.Wi(x_conv) + self.Ri(h_prev)
         f_tilde = self.Wf(x_conv) + self.Rf(h_prev)
 
@@ -189,7 +189,7 @@ class mLSTMBlock(nn.Module):
         x_up_left = self.up_proj_left(x_norm)
         x_up_right = self.up_proj_right(x_norm)
 
-        x_conv = F.silu(self.causal_conv(x_up_left.unsqueeze(1)).squeeze(1))
+        x_conv = F.silu(self.causal_conv(x_up_left.permute(1, 2, 0))).permute(2, 0, 1)
         x_skip = self.skip_connection(x_conv)
 
         q = self.Wq(x_conv)
