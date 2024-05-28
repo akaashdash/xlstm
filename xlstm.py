@@ -70,6 +70,12 @@ class sLSTMBlock(nn.Module):
     def forward(self, x, prev_state):
         assert x.size(-1) == self.input_size
         h_prev, c_prev, n_prev, m_prev = prev_state
+
+        h_prev = h_prev.to(x.device)
+        c_prev = c_prev.to(x.device)
+        n_prev = n_prev.to(x.device)
+        m_prev = m_prev.to(x.device)
+        
         x_norm = self.layer_norm(x)
         x_conv = F.silu(self.causal_conv(x_norm.unsqueeze(1)).squeeze(1))
 
@@ -116,7 +122,7 @@ class sLSTM(nn.Module):
         seq_len, batch_size, _ = x.size()
         
         if state is not None:
-            state = torch.stack(list(state))
+            state = torch.stack(list(state)).to(x.device)
             assert state.ndim == 4
             num_hidden, state_num_layers, state_batch_size, state_input_size = state.size()
             assert num_hidden == 4
@@ -125,7 +131,7 @@ class sLSTM(nn.Module):
             assert state_input_size == self.input_size
             state = state.transpose(0, 1)
         else:
-            state = torch.zeros(self.num_layers, 4, batch_size, self.hidden_size)
+            state = torch.zeros(self.num_layers, 4, batch_size, self.hidden_size, device=x.device)
 
         output = []
         for t in range(seq_len):
@@ -172,6 +178,12 @@ class mLSTMBlock(nn.Module):
 
     def forward(self, x, prev_state):
         h_prev, c_prev, n_prev, m_prev = prev_state
+
+        h_prev = h_prev.to(x.device)
+        c_prev = c_prev.to(x.device)
+        n_prev = n_prev.to(x.device)
+        m_prev = m_prev.to(x.device)
+        
         assert x.size(-1) == self.input_size
         x_norm = self.layer_norm(x)
         x_up_left = self.up_proj_left(x_norm)
@@ -224,7 +236,7 @@ class mLSTM(nn.Module):
         seq_len, batch_size, _ = x.size()
         
         if state is not None:
-            state = torch.stack(list(state))
+            state = torch.stack(list(state)).to(x.device)
             assert state.ndim == 4
             num_hidden, state_num_layers, state_batch_size, state_input_size = state.size()
             assert num_hidden == 4
@@ -233,7 +245,7 @@ class mLSTM(nn.Module):
             assert state_input_size == self.input_size
             state = state.transpose(0, 1)
         else:
-            state = torch.zeros(self.num_layers, 4, batch_size, self.hidden_size)
+            state = torch.zeros(self.num_layers, 4, batch_size, self.hidden_size, device=x.device)
 
         output = []
         for t in range(seq_len):
@@ -278,7 +290,7 @@ class xLSTM(nn.Module):
         seq_len, batch_size, _ = x.size()
         
         if state is not None:
-            state = torch.stack(list(state))
+            state = torch.stack(list(state)).to(x.device)
             assert state.ndim == 4
             num_hidden, state_num_layers, state_batch_size, state_input_size = state.size()
             assert num_hidden == 4
@@ -287,7 +299,7 @@ class xLSTM(nn.Module):
             assert state_input_size == self.input_size
             state = state.transpose(0, 1)
         else:
-            state = torch.zeros(self.num_layers, 4, batch_size, self.hidden_size)
+            state = torch.zeros(self.num_layers, 4, batch_size, self.hidden_size, device=x.device)
 
         output = []
         for t in range(seq_len):
